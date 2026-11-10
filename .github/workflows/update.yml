@@ -38,10 +38,10 @@ jobs:
           mkdir -p "$assets"
           gh release download "$tag" --repo "$SOURCE" --pattern 'aesx-*-win-*.zip' --dir "$assets"
 
-          # From 1.1.0 on, every release file carries a build provenance attestation. A file
+          # From 1.0.2 on, every release file carries a build provenance attestation. A file
           # without one was not built by the release workflow of that repository.
           case "$version" in
-            1.0.*) echo "aesx $version predates attestations" ;;
+            1.0.0|1.0.1) echo "aesx $version predates attestations" ;;
             *) for file in "$assets"/*.zip; do gh attestation verify "$file" --repo "$SOURCE"; done ;;
           esac
 

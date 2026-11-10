@@ -23,7 +23,7 @@ about it on first launch.
 ## How it stays current
 
 [update.yml](.github/workflows/update.yml) looks at the latest aesx release once a day. It
-downloads the release files, verifies their build provenance attestation (releases from 1.1.0
+downloads the release files, verifies their build provenance attestation (releases from 1.0.2
 on have one), computes the checksums itself, and commits the new manifest.
 [test.yml](.github/workflows/test.yml) then downloads what the manifest names, on x64 and on
 ARM64, compares the checksums, and runs the executable and its self-tests.
