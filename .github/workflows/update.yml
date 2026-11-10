@@ -1,0 +1,69 @@
+# Keeps bucket/aesx.json at the latest aesx release: downloads the release files, checks where
+# they were built, computes their checksums here (rather than trusting a list), rewrites the
+# manifest and, if that changed anything, commits it and starts the Test workflow.
+#
+# Runs daily, and on demand:  gh workflow run update.yml --repo yohasacura/scoop-bucket
+name: Update
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # commit the new manifest
+  actions: write    # start the Test workflow for it
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Follow the latest aesx release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rewrite the manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: yohasacura/aesx
+        run: |
+          set -euo pipefail
+          tag=$(gh api "repos/$SOURCE/releases/latest" --jq .tag_name)
+          version=${tag#v}
+          assets="$RUNNER_TEMP/assets"
+          mkdir -p "$assets"
+          gh release download "$tag" --repo "$SOURCE" --pattern 'aesx-*-win-*.zip' --dir "$assets"
+
+          # From 1.1.0 on, every release file carries a build provenance attestation. A file
+          # without one was not built by the release workflow of that repository.
+          case "$version" in
+            1.0.*) echo "aesx $version predates attestations" ;;
+            *) for file in "$assets"/*.zip; do gh attestation verify "$file" --repo "$SOURCE"; done ;;
+          esac
+
+          sum() { sha256sum "$assets/aesx-$version-$1.zip" | cut -d' ' -f1; }
+          jq --indent 4 \
+            --arg version "$version" \
+            --arg base "https://github.com/$SOURCE/releases/download/$tag/aesx-$version" \
+            --arg x64 "$(sum win-x64)" \
+            --arg arm64 "$(sum win-arm64)" \
+            '.version = $version
+             | .architecture."64bit" = { url: ($base + "-win-x64.zip"), hash: $x64, extract_dir: ("aesx-" + $version + "-win-x64") }
+             | .architecture.arm64 = { url: ($base + "-win-arm64.zip"), hash: $arm64, extract_dir: ("aesx-" + $version + "-win-arm64") }' \
+            bucket/aesx.json > "$RUNNER_TEMP/aesx.json"
+          mv "$RUNNER_TEMP/aesx.json" bucket/aesx.json
+
+          if git diff --quiet; then
+            echo "the manifest is already at aesx $version"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --all --message "aesx $version"
+          git push
+          # A push made with the workflow's own token starts no other workflow; this does.
+          gh workflow run test.yml --ref "$GITHUB_REF_NAME"

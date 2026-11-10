@@ -1,0 +1,69 @@
+# Checks the manifest the way Scoop would use it, without installing Scoop: every download
+# exists and has the recorded SHA-256, unpacks to the recorded folder, and holds the executable,
+# which then has to report the manifest's version and pass its own self-tests. Started by every
+# push and pull request, and by the Update workflow after it has written a new version.
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manifest:
+    name: Manifest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, architecture: 64bit }
+          - { os: windows-11-arm, architecture: arm64 }
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download, verify, unpack and run
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content bucket/aesx.json -Raw | ConvertFrom-Json
+          if ($manifest.bin -ne 'aesx.exe') { throw "unexpected bin: $($manifest.bin)" }
+          foreach ($name in '64bit', 'arm64') {
+            $entry = $manifest.architecture.$name
+            $archive = Join-Path $env:RUNNER_TEMP "$name.zip"
+            Invoke-WebRequest -Uri $entry.url -OutFile $archive
+            $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $entry.hash) { throw "$name`: the download has SHA-256 $actual, the manifest says $($entry.hash)" }
+            $target = Join-Path $env:RUNNER_TEMP $name
+            Expand-Archive -Path $archive -DestinationPath $target
+            $exe = Join-Path $target (Join-Path $entry.extract_dir $manifest.bin)
+            if (-not (Test-Path -LiteralPath $exe)) { throw "$name`: $exe is not in the archive" }
+            "$name`: $($entry.url) verified"
+            if ($name -eq '${{ matrix.architecture }}') {
+              $reported = & $exe --version
+              if ($reported -ne "aesx $($manifest.version)") { throw "the executable says '$reported', the manifest says $($manifest.version)" }
+              & $exe selftest | Select-Object -Last 1
+              if ($LASTEXITCODE -ne 0) { throw "the self-tests failed" }
+            }
+          }
+
+      - name: The update rules still describe the current version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content bucket/aesx.json -Raw | ConvertFrom-Json
+          foreach ($name in '64bit', 'arm64') {
+            foreach ($field in 'url', 'extract_dir') {
+              $expected = $manifest.autoupdate.architecture.$name.$field.Replace('$version', $manifest.version)
+              if ($expected -ne $manifest.architecture.$name.$field) { throw "$name $field does not follow the autoupdate rule" }
+            }
+          }
